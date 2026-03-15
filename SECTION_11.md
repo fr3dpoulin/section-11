@@ -1,10 +1,18 @@
 # Section 11 — AI Coach Protocol
 
-**Protocol Version:** 11.15  
-**Last Updated:** 2026-03-14
+**Protocol Version:** 11.16  
+**Last Updated:** 2026-03-15
 **License:** [MIT](https://opensource.org/licenses/MIT)
 
 ### Changelog
+
+**v11.16 — Wellness Field Expansion:**
+- All Intervals.icu wellness fields now passed through: subjective state (stress, mood, motivation, injury, fatigue, soreness, hydration), vitals (spO2, blood glucose, blood pressure, Baevsky SI, lactate, respiration), body composition (body fat, abdomen), nutrition (kcal, carbs, protein, fat), lifestyle (steps, hydration volume), cycle tracking (menstrual phase + predicted)
+- `wellness_field_scales` legend added to READ_THIS_FIRST — documents 1→4 positional scale (1 = best, 4 = worst) with per-field labels
+- Recovery Metrics section updated with extended wellness field reference
+- Bug fix: `hrvSdnn` → `hrvSDNN` case mismatch in `_format_wellness()` (was silently returning null)
+- Pure data passthrough — no readiness_decision changes, no new decision logic
+- sync.py v3.85
 
 **v11.15 — Per-Sport Zone Preference:**
 - `ZONE_PREFERENCE` config: per-sport override for which zone basis (power/HR) feeds aggregations
@@ -1056,6 +1064,8 @@ It governs acute, session-level performance safety, ensuring localized overreach
 - RHR (bpm): 7-day rolling baseline comparison
 - Sleep Quality (1–4): Subjective quality rating (inverted scale: 1=Great, 4=Poor) — manual entry or auto-derived from device sleep score
 - Feel (1–5): Manual subjective entry (1=Strong, 2=Good, 3=Normal, 4=Poor, 5=Weak)
+
+**Extended Wellness Fields (v3.85+):** sync.py passes through all Intervals.icu wellness fields — subjective state (stress, mood, motivation, injury, fatigue, soreness, hydration), vitals (spO2, blood glucose, blood pressure, Baevsky SI, lactate, respiration), body composition (body fat, abdomen), nutrition (kcal, carbs, protein, fat), lifestyle (steps, hydration volume), and cycle tracking (menstrual phase). All categorical fields use a 1→4 positional scale where **1 = best state, 4 = worst state**. Per-field labels are in `wellness_field_scales` in READ_THIS_FIRST. Fields are null when not reported. These are coaching context — none are wired into the automated readiness_decision pipeline.
 
 **Feel/RPE exists at three levels — usage differs by layer:**
 

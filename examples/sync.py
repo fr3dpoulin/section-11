@@ -4,6 +4,17 @@ Intervals.icu → GitHub/Local JSON Export
 Exports training data for LLM access.
 Supports both automated GitHub sync and manual local export.
 
+Version 3.85 - Wellness field expansion: all Intervals.icu wellness fields now passed through to latest.json
+  and history.json. Adds subjective state (stress, mood, motivation, injury, hydration), vitals (spO2,
+  blood glucose, blood pressure, Baevsky SI, lactate, respiration), body composition (body fat, abdomen),
+  nutrition (kcal, carbs, protein, fat), lifestyle (steps, hydration volume), and cycle tracking
+  (menstrual phase + predicted). Bug fix: hrvSdnn → hrvSDNN case mismatch (was silently returning null).
+  wellness_field_scales legend added to READ_THIS_FIRST (1-4 scale direction + per-field labels).
+  Fields null when not reported — zero cost, no new decision logic.
+
+Version 3.84 - Activity description passthrough, chat_notes fix (completed activities),
+  phase_week off-by-one fix.
+
 Version 3.83 - Per-sport zone preference: ZONE_PREFERENCE config overrides power/HR priority per sport family.
   Format: "run:hr,cycling:power". Config cascade: .sync_config.json → env var → default (power preferred).
   _get_activity_zones() converted from @staticmethod to instance method with sport_family param.
@@ -93,7 +104,7 @@ class IntervalsSync:
     HISTORY_FILE = "history.json"
     UPSTREAM_REPO = "CrankAddict/section-11"
     CHANGELOG_FILE = "changelog.json"
-    VERSION = "3.84"
+    VERSION = "3.85"
     INTERVALS_FILE = "intervals.json"
 
     # Sport families eligible for interval-level data extraction.
@@ -726,6 +737,18 @@ class IntervalsSync:
                 "capability_metrics_note": "The 'capability' block in derived_metrics contains durability trend (aggregate decoupling 7d/28d), efficiency factor trend (aggregate EF 7d/28d), HRRc trend (heart rate recovery 7d/28d), and TID comparison (7d vs 28d distribution drift). These measure HOW the athlete expresses fitness, not just load. Use these for coaching context alongside traditional load metrics. Durability and EF trend direction matters more than absolute values. HRRc is display only — higher = better parasympathetic recovery.",
                 "readiness_decision_note": "The 'readiness_decision' block contains a pre-computed go/modify/skip recommendation with priority level (P0=safety, P1=overload, P2=fatigue, P3=green), individual signal statuses, phase-adjusted thresholds, and structured modification guidance. Use this as the baseline for pre-workout recommendations. Override with explanation in the coach note if the AI's contextual judgment disagrees.",
                 "zone_preference": self.zone_preference if self.zone_preference else "default (power preferred, HR fallback)",
+                "wellness_field_scales": {
+                    "note": "All categorical wellness fields use a 1-4 positional scale where 1 = best state, 4 = worst state. Labels differ per field but direction is consistent. Fields are null when not reported.",
+                    "sleep_quality": {"1": "GREAT", "2": "OK", "3": "POOR", "4": "WORST"},
+                    "fatigue": {"1": "None", "2": "Some", "3": "High", "4": "Extreme", "ui_note": "Labeled 'Pre training' in Intervals.icu"},
+                    "soreness": {"1": "None", "2": "Some", "3": "High", "4": "Extreme", "ui_note": "Labeled 'Pre training' in Intervals.icu"},
+                    "stress": {"1": "LOW", "2": "AVG", "3": "HIGH", "4": "EXTREME"},
+                    "mood": {"1": "GREAT", "2": "GOOD", "3": "OK", "4": "GRUMPY"},
+                    "motivation": {"1": "EXTREME", "2": "HIGH", "3": "AVG", "4": "LOW"},
+                    "injury": {"1": "NONE", "2": "NIGGLE", "3": "POOR", "4": "INJURED"},
+                    "hydration": {"1": "GOOD", "2": "OK", "3": "POOR", "4": "BAD"},
+                    "menstrual": "menstrual_phase and menstrual_phase_predicted are not on the 1-4 scale. Values: PERIOD, FOLLICULAR, OVULATION, LUTEAL, etc."
+                },
                 "quick_stats": {
                     "total_training_hours": round(sum(act.get("moving_time", 0) for act in activities_display) / 3600, 2),
                     "total_training_formatted": self._format_duration(int(sum(act.get("moving_time", 0) for act in activities_display)) // 60 * 60),
@@ -766,7 +789,39 @@ class IntervalsSync:
                     "hrv": latest_wellness.get("hrv"),
                     "sleep_quality": latest_wellness.get("sleepQuality"),
                     "sleep_hours": round(latest_wellness.get("sleepSecs", 0) / 3600, 2) if latest_wellness.get("sleepSecs") else None,
-                    "sleep_formatted": self._format_duration(int(latest_wellness.get("sleepSecs", 0)) // 60 * 60) if latest_wellness.get("sleepSecs") else None
+                    "sleep_formatted": self._format_duration(int(latest_wellness.get("sleepSecs", 0)) // 60 * 60) if latest_wellness.get("sleepSecs") else None,
+                    "sleep_score": latest_wellness.get("sleepScore"),
+                    # Subjective state (categorical 1-4, see wellness_field_scales in READ_THIS_FIRST)
+                    "fatigue": latest_wellness.get("fatigue"),
+                    "soreness": latest_wellness.get("soreness"),
+                    "stress": latest_wellness.get("stress"),
+                    "mood": latest_wellness.get("mood"),
+                    "motivation": latest_wellness.get("motivation"),
+                    "injury": latest_wellness.get("injury"),
+                    "hydration": latest_wellness.get("hydration"),
+                    # Vitals
+                    "spO2": latest_wellness.get("spO2"),
+                    "blood_glucose": latest_wellness.get("bloodGlucose"),
+                    "systolic": latest_wellness.get("systolic"),
+                    "diastolic": latest_wellness.get("diastolic"),
+                    "baevsky_si": latest_wellness.get("baevskySI"),
+                    "lactate": latest_wellness.get("lactate"),
+                    "respiration": latest_wellness.get("respiration"),
+                    # Body composition
+                    "body_fat_pct": latest_wellness.get("bodyFat"),
+                    "abdomen_cm": latest_wellness.get("abdomen"),
+                    # Lifestyle / nutrition
+                    "steps": latest_wellness.get("steps"),
+                    "hydration_volume_l": latest_wellness.get("hydrationVolume"),
+                    "kcal_consumed": latest_wellness.get("kcalConsumed"),
+                    "carbohydrates_g": latest_wellness.get("carbohydrates"),
+                    "protein_g": latest_wellness.get("protein"),
+                    "fat_g": latest_wellness.get("fatTotal"),
+                    # Cycle
+                    "menstrual_phase": latest_wellness.get("menstrualPhase"),
+                    "menstrual_phase_predicted": latest_wellness.get("menstrualPhasePredicted"),
+                    # Platform
+                    "readiness": latest_wellness.get("readiness")
                 }
             },
             "derived_metrics": derived_metrics,
@@ -3676,9 +3731,41 @@ class IntervalsSync:
                 "sleep_hours": round(wellness.get("sleepSecs", 0) / 3600, 2) if wellness.get("sleepSecs") else None,
                 "sleep_formatted": self._format_duration(int(wellness.get("sleepSecs", 0)) // 60 * 60) if wellness.get("sleepSecs") else None,
                 "sleep_quality": wellness.get("sleepQuality"),
+                "sleep_score": wellness.get("sleepScore"),
                 "weight_kg": wellness.get("weight"),
                 "is_hard_day": is_hard,
-                "intensity_basis": intensity_basis
+                "intensity_basis": intensity_basis,
+                # Subjective state (categorical 1-4, see wellness_field_scales in READ_THIS_FIRST)
+                "fatigue": wellness.get("fatigue"),
+                "soreness": wellness.get("soreness"),
+                "stress": wellness.get("stress"),
+                "mood": wellness.get("mood"),
+                "motivation": wellness.get("motivation"),
+                "injury": wellness.get("injury"),
+                "hydration": wellness.get("hydration"),
+                # Vitals
+                "spO2": wellness.get("spO2"),
+                "blood_glucose": wellness.get("bloodGlucose"),
+                "systolic": wellness.get("systolic"),
+                "diastolic": wellness.get("diastolic"),
+                "baevsky_si": wellness.get("baevskySI"),
+                "lactate": wellness.get("lactate"),
+                "respiration": wellness.get("respiration"),
+                # Body composition
+                "body_fat_pct": wellness.get("bodyFat"),
+                "abdomen_cm": wellness.get("abdomen"),
+                # Lifestyle / nutrition
+                "steps": wellness.get("steps"),
+                "hydration_volume_l": wellness.get("hydrationVolume"),
+                "kcal_consumed": wellness.get("kcalConsumed"),
+                "carbohydrates_g": wellness.get("carbohydrates"),
+                "protein_g": wellness.get("protein"),
+                "fat_g": wellness.get("fatTotal"),
+                # Cycle
+                "menstrual_phase": wellness.get("menstrualPhase"),
+                "menstrual_phase_predicted": wellness.get("menstrualPhasePredicted"),
+                # Platform
+                "readiness": wellness.get("readiness")
             })
         
         return rows
@@ -4425,19 +4512,49 @@ class IntervalsSync:
         for w in wellness:
             entry = {
                 "date": w.get("id", "unknown"),
+                # Core metrics
                 "weight_kg": w.get("weight"),
                 "resting_hr": w.get("restingHR"),
                 "hrv_rmssd": w.get("hrv"),
-                "hrv_sdnn": w.get("hrvSdnn"),
+                "hrv_sdnn": w.get("hrvSDNN"),
                 "sleep_hours": round(w["sleepSecs"] / 3600, 2) if w.get("sleepSecs") else None,
                 "sleep_formatted": self._format_duration(int(w["sleepSecs"]) // 60 * 60) if w.get("sleepSecs") else None,
                 "sleep_quality": w.get("sleepQuality"),
                 "sleep_score": w.get("sleepScore"),
                 "mental_energy": w.get("mentalEnergy"),
+                "avg_sleeping_hr": w.get("avgSleepingHR"),
+                "vo2max": w.get("vo2max"),
+                # Subjective state (categorical 1-4, see wellness_field_scales in READ_THIS_FIRST)
                 "fatigue": w.get("fatigue"),
                 "soreness": w.get("soreness"),
-                "avg_sleeping_hr": w.get("avgSleepingHR"),
-                "vo2max": w.get("vo2max")
+                "stress": w.get("stress"),
+                "mood": w.get("mood"),
+                "motivation": w.get("motivation"),
+                "injury": w.get("injury"),
+                "hydration": w.get("hydration"),
+                # Vitals
+                "spO2": w.get("spO2"),
+                "blood_glucose": w.get("bloodGlucose"),
+                "systolic": w.get("systolic"),
+                "diastolic": w.get("diastolic"),
+                "baevsky_si": w.get("baevskySI"),
+                "lactate": w.get("lactate"),
+                "respiration": w.get("respiration"),
+                # Body composition
+                "body_fat_pct": w.get("bodyFat"),
+                "abdomen_cm": w.get("abdomen"),
+                # Lifestyle / nutrition
+                "steps": w.get("steps"),
+                "hydration_volume_l": w.get("hydrationVolume"),
+                "kcal_consumed": w.get("kcalConsumed"),
+                "carbohydrates_g": w.get("carbohydrates"),
+                "protein_g": w.get("protein"),
+                "fat_g": w.get("fatTotal"),
+                # Cycle
+                "menstrual_phase": w.get("menstrualPhase"),
+                "menstrual_phase_predicted": w.get("menstrualPhasePredicted"),
+                # Platform
+                "readiness": w.get("readiness")
             }
             
             formatted.append(entry)
