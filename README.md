@@ -61,9 +61,9 @@ Copy `DOSSIER_TEMPLATE.md` and fill in your athlete profile (age, weight, goals)
 
 Keep your Intervals.icu data fresh for your AI coach automatically.
 
-**[GitHub sync](examples/json-auto-sync/SETUP.md)** — GitHub Actions syncs every 15 minutes to a private repo. Your AI reads via GitHub connector or raw URL. Zero maintenance after setup.
-
 **[Local sync](examples/json-local-sync/SETUP.md)** — a script on a machine you control syncs your data on a 60-second timer. Your AI reads directly from the filesystem or via a cloud connector (Google Drive, OneDrive — [platform support varies](#platform-setup)). No GitHub needed.
+
+**[GitHub sync](examples/json-auto-sync/SETUP.md)** — GitHub Actions syncs every 15 minutes to a private repo. Your AI reads via GitHub connector or raw URL. Zero maintenance after setup.
 
 **[Manual export](examples/json-manual/SETUP.md)** — run once, upload the file. No automation.
 
@@ -78,10 +78,11 @@ Choose your path:
 
 Your AI needs access to `SECTION_11.md` (the protocol) and `DOSSIER.md` (your profile). How depends on your setup:
 
+- **Local/agentic:** The AI reads directly from the filesystem — no upload needed.
 - **GitHub connector:** If these files are in your connected repo, the AI reads them directly — no upload needed. If only `DOSSIER.md` is in your data repo, upload `SECTION_11.md` separately (or connect the CrankAddict/section-11 repo too).
 - **Cloud connector (Google Drive, OneDrive — [platform support varies](#platform-setup)):** If these files are in your synced folder, the AI reads them through the connector — no upload needed.
-- **Local/agentic:** The AI reads directly from the filesystem — no upload needed.
-- **URL fetch (no connector):** Upload both files to your AI platform's knowledge base manually.
+- **URL fetch (no connector):** If your data repo is public, the AI can fetch raw URLs directly.
+- **Manual upload:** Upload both files to your AI platform or project.
 
 ---
 
@@ -191,17 +192,17 @@ Omit fields only if data unavailable for that activity type.
 - DOSSIER.md — Profile, zones, goals (attached or in connected data repo)
 ```
 
-**If using URL fetch:** Replace `[USERNAME]/[REPO]` with your GitHub data mirror path.
+**If using local sync:** The AI reads files from the data directory. No URL editing needed. See [local sync setup](examples/json-local-sync/SETUP.md) for project instructions tailored to filesystem access.
 
 **If using a connector (GitHub, Google Drive, OneDrive — [platform support varies](#platform-setup)):** The AI reads files directly — no URL editing needed. If you committed `DOSSIER.md` to your data repo, the connector provides your data and dossier in one connection. `SECTION_11.md` can be uploaded separately or accessed via a second connector to the CrankAddict/section-11 repo.
 
-**If using local sync:** The AI reads files from the data directory. No URL editing needed. See [local sync setup](examples/json-local-sync/SETUP.md) for project instructions tailored to filesystem access.
+**If using URL fetch:** Replace `[USERNAME]/[REPO]` with your GitHub data mirror path.
 
 ### Platform Setup
 
 Most major AI platforms now have native GitHub connectors that can access private repos directly. This means you no longer need a public repo or manual file uploads in most cases.
 
-**GitHub connector status for web chat platforms.** Agentic platforms (Claude Code, Codex, OpenClaw, etc.) have full GitHub access including workflow dispatch — see [Agentic Setup](#agentic-setup).
+**GitHub connector status for web chat platforms.** Agentic platforms (OpenClaw, Claude Code, Codex, etc.) have full GitHub access including workflow dispatch — see [Agentic Setup](#agentic-setup).
 
 | Platform | GitHub Connector | Private Repos | Can Trigger Actions | Plan Notes |
 |----------|-----------------|---------------|---------------------|------------|
