@@ -1322,16 +1322,16 @@ Route intelligence applies to any coaching conversation where terrain is known �
 
 **`routes.json` structure:** Each event with a GPX/TCX attachment produces a `terrain_summary` containing: `total_distance_km`, `total_elevation_m`, `elevation_per_km`, `course_character`, `climbs` array, `descents` array, and `polyline` (GPS track downsampled at 500m intervals with elevation).
 
-**Course character** classifies the overall route profile. Section 11 convention:
+**Course character** classifies the overall route profile using elevation density (m/km). Total elevation alone is distance-blind — 2000m over 300 km is rolling, not hilly. Section 11 convention:
 
 | Classification | Criteria |
 |---|---|
-| flat | <200m total elevation AND <5 m/km |
-| rolling | ≥200m or ≥5 m/km, no categorized climbs |
-| hilly | ≥1500m or ≥20 m/km, OR has Cat 2 / Cat 1 / HC climb |
-| mountain | ≥3000m or ≥30 m/km |
+| flat | <5 m/km |
+| rolling | ≥5 m/km |
+| hilly | ≥20 m/km, OR has Cat 2 / Cat 1 / HC climb |
+| mountain | ≥30 m/km |
 
-Climb category presence upgrades classification — a route with a Cat 1 climb is `hilly` regardless of total elevation. A route with ≥30 m/km elevation density is `mountain` even without a single long categorized climb (catches routes with many short steep pitches).
+Climb category presence upgrades classification — a route with a Cat 1 climb is `hilly` regardless of elevation density. A route with ≥30 m/km is `mountain` even without a single long categorized climb (catches routes with many short steep pitches).
 
 **Climb classification** follows conventional UCI/Tour-derived categories based on elevation gain:
 
@@ -1486,7 +1486,7 @@ When route data is available, the AI can produce a structured pre-ride briefing 
 | Coyle et al. | CHO ingestion maintains blood glucose (actual fatigue trigger), does not spare muscle glycogen | Fueling prevents bonk via blood glucose, not glycogen sparing |
 | Springer Nature (2025) | Power response to wind is non-linear and velocity-dependent; headwind substantially increases power cost at speed | Wind impact scales with speed regime, not gradient directly |
 | Climb classification | UCI/Tour conventional categories — elevation-based thresholds | Industry convention, not a single research finding |
-| Course character heuristic | Section 11 convention — flat/rolling/hilly/mountain boundaries from total elevation + elevation density + climb presence | Engineering decision for route classification |
+| Course character heuristic | Section 11 convention — flat/rolling/hilly/mountain boundaries from elevation density (m/km) + climb presence | Engineering decision for route classification |
 
 ---
 
