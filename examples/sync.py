@@ -4,6 +4,36 @@ Intervals.icu → GitHub/Local JSON Export
 Exports training data for LLM access.
 Supports both automated GitHub sync and manual local export.
 
+Version 3.108 - Conservative error classification for intervals/streams/terrain fetchers:
+  resolves v3.107 TODO. _fetch_activity_intervals, _fetch_activity_streams, and
+  _fetch_terrain_streams now return (status, payload) tuples: terminal_error for HTTP
+  404/410 only, transient for everything else (5xx, 429, all other 4xx incl. 401/403,
+  network, timeout, parse, shape). Caller skips the cache write on transient — activity
+  stays out of cached_ids and is retried next sync. Pre-3.108 streams/intervals caught
+  all exceptions as []/{}, so a transient hiccup wrote a partial entry that locked out
+  valid DFA/interval data forever. Conservative {404, 410} whitelist prevents auth or
+  config glitches (401, 403) from permanently marking activities as failed. Terrain 4xx
+  branch narrowed from broad-4xx-terminal to the same whitelist. Schema unchanged.
+
+Version 3.107 - Completed-Activity Terrain & Weather: terrain_summary and weather_summary
+  blocks embedded on outdoor activities in recent_activities[]. State-on-record (no new
+  files) — sync.py loads its own previous latest.json at start of each run and copies
+  forward; presence of terrain_summary or a terminal terrain_status IS the "already
+  pulled" signal. Indoor activities have no field at all (type is the indoor signal).
+  New _fetch_terrain_streams returns (status, payload) with terminal/transient
+  classification (5xx/429/network NOT cached). latlng dual-array gotcha: Intervals stores
+  lat in data and lng in data2 — NOT Strava's paired [lat, lng]. max_grade_pct now tracks
+  max abs grade across all 200m chunks rather than detected-climbs-only — earlier impl
+  reported 0.0 on rolling routes whose kickers didn't cross the sustained-climb threshold.
+  Smoothed-pipeline attenuates peak gradients (12-15% real reads as 6-8%); SECTION_11
+  max_grade_pct >= 8 trigger calibrated to this scale. weather_summary uses stable keys
+  plus a units sub-block; athlete unit settings fetched once per sync. weather_status
+  re-evaluated every sync (unlike terrain) since Intervals can compute weather
+  minutes-to-hours after upload. New helpers: _compute_grade_distribution,
+  _streams_to_trackpoints, _fetch_terrain_streams, _athlete_units_from_dict,
+  _load_previous_latest, _build_terrain_for_activity, _build_weather_for_activity.
+  Companion: examples/agentic/pull.py read-only streams/units fetcher.
+
 Version 3.106 - has_intervals semantics fix: has_intervals is now true only when at least
   one interval segment is type=="WORK". Pre-existing bug: a non-empty intervals list was
   treated as structured, but Intervals.icu emits a single whole-session RECOVERY placeholder
@@ -128,7 +158,7 @@ class IntervalsSync:
     HISTORY_FILE = "history.json"
     UPSTREAM_REPO = "CrankAddict/section-11"
     CHANGELOG_FILE = "changelog.json"
-    VERSION = "3.107"
+    VERSION = "3.108"
     INTERVALS_FILE = "intervals.json"
     ROUTES_FILE = "routes.json"
 
@@ -292,41 +322,86 @@ class IntervalsSync:
         except Exception:
             return []
     
-    def _fetch_activity_intervals(self, activity_id: str) -> List[Dict]:
-        """Fetch interval segments for a single activity. Returns icu_intervals list or empty list on failure."""
+    def _fetch_activity_intervals(self, activity_id: str) -> tuple:
+        """
+        Fetch interval segments for a single activity.
+
+        Distinguishes terminal from transient errors so the caller can decide
+        whether to write the cache entry (terminal: definitive answer, cache it
+        and skip on future syncs) or skip the write (transient: retry next sync).
+
+        Returns (status, payload):
+            ("ok", icu_intervals_list)  — 200 with non-empty icu_intervals
+            ("no_data", [])             — 200 with empty/missing icu_intervals
+                                          (legitimate unstructured ride)
+            ("terminal_error", "http_NNN") — 404, 410 (resource genuinely gone)
+            ("transient", reason_str)   — everything else: 5xx, 429, all other
+                                          4xx (incl. 401/403 — auth/config flakes
+                                          must NOT become permanent cache truth),
+                                          network, timeout, parse error,
+                                          unexpected response shape
+        """
         url = f"{self.INTERVALS_BASE_URL}/activity/{activity_id}"
         headers = {
             "Authorization": f"Basic {self.intervals_auth}",
             "Accept": "application/json"
         }
         try:
-            response = requests.get(url, headers=headers, params={"intervals": "true"})
-            response.raise_for_status()
-            data = response.json()
-            intervals = data.get("icu_intervals", [])
-            if isinstance(intervals, list):
-                return intervals
-            return []
-        except Exception as e:
-            if self.debug:
-                print(f"    ⚠️  Could not fetch intervals for {activity_id}: {e}")
-            return []
+            response = requests.get(url, headers=headers, params={"intervals": "true"}, timeout=30)
+        except requests.exceptions.Timeout:
+            return ("transient", "timeout")
+        except requests.exceptions.RequestException as e:
+            return ("transient", f"network: {str(e)[:80]}")
 
-    def _fetch_activity_streams(self, activity_id: str, types: List[str]) -> Dict[str, List]:
+        status_code = response.status_code
+        if status_code == 200:
+            try:
+                data = response.json()
+            except ValueError:
+                return ("transient", "parse_error")
+            if not isinstance(data, dict):
+                return ("transient", "unexpected_shape")
+            intervals = data.get("icu_intervals", [])
+            if not isinstance(intervals, list):
+                return ("transient", "unexpected_shape")
+            if not intervals:
+                return ("no_data", [])
+            return ("ok", intervals)
+        elif status_code in (404, 410):
+            return ("terminal_error", f"http_{status_code}")
+        else:
+            # Conservative: all other non-2xx (incl. 401/403/5xx/429) treated as
+            # transient. Better to retry than permanently cache an auth/config flake.
+            return ("transient", f"http_{status_code}")
+
+    def _fetch_activity_streams(self, activity_id: str, types: List[str]) -> tuple:
         """
         Fetch per-second streams for a single activity.
 
         Generic streams fetcher for any rollup metric that needs second-by-second data.
-        Returns a dict keyed by stream type, value is the data list. Streams not present
-        in the response are simply absent from the returned dict.
+        Distinguishes terminal from transient errors so the caller can decide whether
+        to write a cache entry (terminal: definitive, skip on future syncs) or skip
+        the write (transient: retry next sync).
 
-        Returns empty dict on 404/exception. Many activities won't have AlphaHRV-derived
-        streams (no Connect IQ field installed, sourced via Strava which strips dev fields,
-        wrong sport, etc.) — that's expected and not an error.
+        Returns (status, payload):
+            ("ok", streams_dict)        — 200 with at least one requested stream
+                                          populated; dict keyed by stream type,
+                                          value is the data list
+            ("no_data", {})             — 200 but none of the requested streams
+                                          present (legitimate — e.g., no AlphaHRV
+                                          Connect IQ field installed, sourced via
+                                          Strava which strips dev fields)
+            ("terminal_error", "http_NNN") — 404, 410 (resource genuinely gone)
+            ("transient", reason_str)   — everything else: 5xx, 429, all other
+                                          4xx (incl. 401/403 — auth/config flakes
+                                          must NOT become permanent cache truth),
+                                          network, timeout, parse error,
+                                          unexpected response shape
 
-        Note on cache invalidation: streams are fetched once per activity. If the underlying
-        FIT is reprocessed in AlphaHRV's mobile app and re-uploaded, the cached rollup will
-        be stale. Rare in practice; workaround is to delete intervals.json.
+        Note on cache invalidation: streams are fetched once per activity. If the
+        underlying FIT is reprocessed in AlphaHRV's mobile app and re-uploaded,
+        the cached rollup will be stale. Rare in practice; workaround is to delete
+        intervals.json.
         """
         url = f"{self.INTERVALS_BASE_URL}/activity/{activity_id}/streams"
         headers = {
@@ -334,11 +409,20 @@ class IntervalsSync:
             "Accept": "application/json"
         }
         try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+            response = requests.get(url, headers=headers, timeout=30)
+        except requests.exceptions.Timeout:
+            return ("transient", "timeout")
+        except requests.exceptions.RequestException as e:
+            return ("transient", f"network: {str(e)[:80]}")
+
+        status_code = response.status_code
+        if status_code == 200:
+            try:
+                data = response.json()
+            except ValueError:
+                return ("transient", "parse_error")
             if not isinstance(data, list):
-                return {}
+                return ("transient", "unexpected_shape")
             wanted = set(types)
             out = {}
             for s in data:
@@ -347,11 +431,15 @@ class IntervalsSync:
                     sdata = s.get("data")
                     if isinstance(sdata, list):
                         out[stype] = sdata
-            return out
-        except Exception as e:
-            if self.debug:
-                print(f"    ⚠️  Could not fetch streams for {activity_id}: {e}")
-            return {}
+            if not out:
+                return ("no_data", {})
+            return ("ok", out)
+        elif status_code in (404, 410):
+            return ("terminal_error", f"http_{status_code}")
+        else:
+            # Conservative: all other non-2xx (incl. 401/403/5xx/429) treated as
+            # transient. Better to retry than permanently cache an auth/config flake.
+            return ("transient", f"http_{status_code}")
 
     def _fetch_terrain_streams(self, activity_id: str) -> tuple:
         """
@@ -361,18 +449,21 @@ class IntervalsSync:
         whether to write a terminal status (skip on future syncs) or leave
         unmarked (retry on next sync).
         
-        Unlike _fetch_activity_streams (which is used for DFA and treats all
-        errors uniformly as "no data"), this fetcher classifies the response.
         The latlng stream uses Intervals' dual-array shape (data=lat, data2=lng)
-        which the generic fetcher discards, so we return the raw stream list.
+        which the generic fetcher discards, so this terrain-specific fetcher
+        returns the raw stream list rather than reusing _fetch_activity_streams.
         
         Returns (status, payload):
             ("ok", streams_list)         — 200 with usable streams
             ("no_gps", None)             — 200 but no latlng stream present
             ("no_elevation", streams_list) — 200 with latlng but no altitude
                                             (caller may still want trackpoints)
-            ("terminal_error", code_str) — 4xx (excluding 429); code is "http_NNN"
-            ("transient", reason_str)    — 5xx, 429, network, timeout, parse error
+            ("terminal_error", "http_NNN") — 404, 410 (resource genuinely gone)
+            ("transient", reason_str)    — everything else: 5xx, 429, all other
+                                           4xx (incl. 401/403 — auth/config flakes
+                                           must NOT become permanent cache truth),
+                                           network, timeout, parse error,
+                                           unexpected response shape
         """
         url = f"{self.INTERVALS_BASE_URL}/activity/{activity_id}/streams.json?types=time,distance,altitude,latlng"
         headers = {
@@ -406,14 +497,12 @@ class IntervalsSync:
             if not altitude_stream or not (altitude_stream.get("data") or []):
                 return ("no_elevation", data)
             return ("ok", data)
-        elif status_code == 429:
-            return ("transient", "rate_limited")
-        elif 400 <= status_code < 500:
+        elif status_code in (404, 410):
             return ("terminal_error", f"http_{status_code}")
-        elif 500 <= status_code < 600:
-            return ("transient", f"http_{status_code}")
         else:
-            return ("transient", f"unexpected_status_{status_code}")
+            # Conservative: all other non-2xx (incl. 401/403/5xx/429) treated as
+            # transient. Better to retry than permanently cache an auth/config flake.
+            return ("transient", f"http_{status_code}")
 
     def _athlete_units_from_dict(self, athlete: Dict) -> Dict[str, str]:
         """
@@ -944,9 +1033,29 @@ class IntervalsSync:
         for act in candidates:
             act_id = act.get("id")
             print(f"    Fetching intervals/streams for {act.get('name', act_id)}...")
-            raw_intervals = self._fetch_activity_intervals(act_id)
-            # raw_intervals may be empty for unstructured endurance rides — that's fine,
-            # we still attempt streams below for DFA a1.
+
+            # v3.108: classify fetch outcomes. Transient on either fetcher → skip
+            # this activity entirely (no cache write). Activity stays out of
+            # cached_ids and is retried on the next sync. Terminal (404/410) and
+            # no_data are definitive: cache the entry so we don't keep retrying.
+            intervals_status, intervals_payload = self._fetch_activity_intervals(act_id)
+            if intervals_status == "transient":
+                if self.debug:
+                    print(f"    ⚠️  Intervals fetch transient failure for {act_id}: {intervals_payload} (will retry)")
+                continue
+
+            streams_status, streams_payload = self._fetch_activity_streams(
+                act_id, ["dfa_a1", "artifacts", "heartrate", "watts"]
+            )
+            if streams_status == "transient":
+                if self.debug:
+                    print(f"    ⚠️  Streams fetch transient failure for {act_id}: {streams_payload} (will retry)")
+                continue
+
+            # Normalize payloads. On no_data/terminal_error, payload is a sentinel
+            # ([] / {} / "http_NNN") — treat as "definitively absent" rather than
+            # iterating over it.
+            raw_intervals = intervals_payload if intervals_status == "ok" else []
 
             # Format interval segments (empty list if no structured intervals exist)
             segments = []
@@ -973,20 +1082,18 @@ class IntervalsSync:
                 segment = {k: v for k, v in segment.items() if v is not None}
                 segments.append(segment)
 
-            # DFA a1 session-level rollup (v3.99) — fetch streams, compute block.
+            # DFA a1 session-level rollup (v3.99) — compute block only on ok.
             # None means no AlphaHRV recording on this activity (skip dfa key entirely).
             # A block with quality.sufficient=False means AlphaHRV ran but data unusable.
             dfa_block = None
-            try:
-                streams = self._fetch_activity_streams(
-                    act_id, ["dfa_a1", "artifacts", "heartrate", "watts"]
-                )
-                if streams.get("dfa_a1"):
-                    dfa_block = self._compute_dfa_block(streams)
-            except Exception as e:
-                if self.debug:
-                    print(f"    ⚠️  DFA a1 computation failed for {act_id}: {e}")
-                dfa_block = None
+            if streams_status == "ok":
+                try:
+                    if streams_payload.get("dfa_a1"):
+                        dfa_block = self._compute_dfa_block(streams_payload)
+                except Exception as e:
+                    if self.debug:
+                        print(f"    ⚠️  DFA a1 computation failed for {act_id}: {e}")
+                    dfa_block = None
 
             # Emit entry if EITHER segments OR dfa block exists.
             # Pure endurance rides with AlphaHRV: no segments, has dfa.
